@@ -1,0 +1,9 @@
+timelock
+requests
+cryptography
+boto3
+python-dotenv
+numpy
+pandas
+bittensor          # SDK: wallet + subtensor.commit() used by run_miner.py
+bittensor-cli      # provides the `btcli` command (for `btcli subnet register`)
