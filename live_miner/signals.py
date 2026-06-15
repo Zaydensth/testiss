@@ -84,7 +84,7 @@ def _ema_reversal_pos(close, win=120, smooth=0.99, lookback=2000):
     return float(np.clip(pos, -1.0, 1.0))
 
 
-def build_embeddings(price: "PriceFeed", funding: "FundingFeed") -> list:
+def build_embeddings(price: "PriceFeed", funding: "FundingFeed", vfeed=None) -> list:
     out = []
     for c in config.CHALLENGES:
         tk = c["ticker"]
@@ -139,10 +139,18 @@ def build_embeddings(price: "PriceFeed", funding: "FundingFeed") -> list:
             out.append({a: float(np.clip(v - med, -1, 1)) for a, v in raw.items()})
 
         elif lf == "funding_xsec":                             # contrarian funding change (8h)
-            raw = {a: -(funding.change(a, 8) if not np.isnan(funding.change(a, 8)) else 0.0)
-                   for a in c["assets"]}
+            # prefer the validator's own funding (Bybit, from latest_prices.json) so our
+            # features match the label source; 8h = 480 polled minutes. Fall back to the
+            # Hyperliquid hourly feed (8h = 8 samples) until vfeed has accrued enough history.
+            use_v = vfeed is not None and getattr(vfeed, "n", 0) > 480
+            raw = {}
+            for a in c["assets"]:
+                if use_v:
+                    ch = vfeed.change(a, 480)
+                else:
+                    ch = funding.change(a, 8)
+                raw[a] = -(ch if (ch is not None and not np.isnan(ch)) else 0.0)
             med = np.median(list(raw.values())) if raw else 0.0
-            # scale tiny funding deltas into [-1,1] by rank-ish normalization
             vals = np.array(list(raw.values()))
             sd = vals.std() + 1e-12
             out.append({a: float(np.clip((v - med) / sd, -1, 1)) for a, v in raw.items()})

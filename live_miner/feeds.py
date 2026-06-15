@@ -170,3 +170,87 @@ class FundingFeed:
         if a is None or len(a) <= hours:
             return np.nan
         return float(a[-1] - a[-1 - hours])
+
+
+class ValidatorFeed:
+    """Polls the validator's own latest_prices.json (config.PRICE_DATA_URL) — the
+    EXACT prices + funding the validator labels/scores against (Polygon spot +
+    Bybit perp funding). Using this aligns our features with the labels, which is
+    the single biggest free signal-quality lever. Keeps a rolling per-minute
+    funding history (persisted to disk so restarts don't lose it) so we can
+    compute the 8h funding-change the FUNDING-XSEC label is built from.
+
+    Funding here is the source the validator actually uses (Bybit), unlike
+    Hyperliquid — so it matches the label, not just a correlated proxy.
+    """
+
+    def __init__(self, url, cache_dir=None, maxlen=4320):  # 4320 min = 3 days
+        self.url = url
+        self.maxlen = maxlen
+        self.ts = []                 # epoch-sec of each poll
+        self.funding = {}            # asset -> list[rate]
+        self.price = {}              # asset -> latest price
+        root = cache_dir or os.environ.get("MANTIS_DATA_DIR", os.path.join(os.path.dirname(__file__), ".cache"))
+        os.makedirs(root, exist_ok=True)
+        self.path = os.path.join(root, "validator_funding.jsonl")
+        self._load()
+
+    def _load(self):
+        import json
+        if not os.path.exists(self.path):
+            return
+        try:
+            with open(self.path) as f:
+                for line in f.readlines()[-self.maxlen:]:
+                    rec = json.loads(line)
+                    self.ts.append(rec["t"])
+                    for a, v in rec["f"].items():
+                        self.funding.setdefault(a, []).append(float(v))
+        except Exception:
+            pass
+
+    def poll(self):
+        import json
+        try:
+            r = _S.get(self.url, timeout=15)
+            if r.status_code != 200:
+                return False
+            d = r.json()
+        except Exception:
+            return False
+        pr = d.get("prices", {}) or {}
+        fr = d.get("funding_rates", {}) or {}
+        self.price = {a: float(v) for a, v in pr.items() if isinstance(v, (int, float))}
+        # only append a new funding row if the snapshot timestamp advanced
+        t = d.get("timestamp") or len(self.ts)
+        if self.ts and self.ts[-1] == t:
+            return True
+        self.ts.append(t)
+        for a, v in fr.items():
+            if isinstance(v, (int, float)):
+                self.funding.setdefault(a, []).append(float(v))
+        # trim
+        if len(self.ts) > self.maxlen:
+            self.ts = self.ts[-self.maxlen:]
+            for a in self.funding:
+                self.funding[a] = self.funding[a][-self.maxlen:]
+        try:
+            with open(self.path, "a") as f:
+                f.write(json.dumps({"t": t, "f": fr}) + "\n")
+        except Exception:
+            pass
+        return True
+
+    def change(self, asset, minutes):
+        """Funding-rate change over the last `minutes` of polled history."""
+        a = self.funding.get(asset)
+        if a is None or len(a) <= minutes:
+            return np.nan
+        return float(a[-1] - a[-1 - minutes])
+
+    def get_price(self, asset):
+        return self.price.get(asset, np.nan)
+
+    @property
+    def n(self):
+        return len(self.ts)

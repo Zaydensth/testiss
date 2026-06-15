@@ -32,7 +32,7 @@ except Exception:
     pass
 
 import config                                  # noqa: E402
-from feeds import PriceFeed, FundingFeed       # noqa: E402
+from feeds import PriceFeed, FundingFeed, ValidatorFeed  # noqa: E402
 from signals import build_embeddings           # noqa: E402
 
 
@@ -55,10 +55,13 @@ def make_feeds():
     print("[feeds] warming price (one-time, may take a few minutes)...", flush=True)
     price.warmup(bars=4200)
     funding = FundingFeed(fa)
-    print("[feeds] warming funding (Hyperliquid)...", flush=True)
+    print("[feeds] warming funding (Hyperliquid fallback)...", flush=True)
     funding.warmup(days=45)
-    print(f"[feeds] price.ok={len(price.ok)}/{len(pa)} funding.ok={len(funding.ok)}/{len(fa)}", flush=True)
-    return price, funding
+    vfeed = ValidatorFeed(config.PRICE_DATA_URL)
+    vfeed.poll()  # validator's own prices+funding (Bybit); rolling history builds over time
+    print(f"[feeds] price.ok={len(price.ok)}/{len(pa)} funding.ok={len(funding.ok)}/{len(fa)} "
+          f"vfeed.n={vfeed.n} (need >480 to use validator funding)", flush=True)
+    return price, funding, vfeed
 
 
 def build_payload(hotkey, embeddings, lock_seconds):
@@ -101,13 +104,14 @@ def run(dry_run=False, once=False):
     hotkey = os.environ.get("HOTKEY_SS58", "DRYRUN_HOTKEY")
     lock_s = int(os.environ.get("LOCK_SECONDS", "30"))
     cycle_s = int(os.environ.get("CYCLE_SECONDS", "60"))
-    price, funding = make_feeds()
+    price, funding, vfeed = make_feeds()
     n = 0
     while True:
         t0 = time.time()
         if n > 0:
             price.update(); funding.update()
-        emb = build_embeddings(price, funding)
+        vfeed.poll()
+        emb = build_embeddings(price, funding, vfeed)
         if dry_run:
             obj = {c["ticker"]: v for v, c in zip(emb, config.CHALLENGES)}
             obj["hotkey"] = hotkey
