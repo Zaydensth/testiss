@@ -60,6 +60,30 @@ def _ofi_recent(ofi, win):
     return float(np.mean(ofi[-win:]))
 
 
+def _mom_z(close, win):
+    if len(close) < win + 2:
+        return 0.0
+    lp = np.log(np.clip(close[-(win + 1):], 1e-12, None))
+    sd = np.diff(lp).std() * np.sqrt(win) + 1e-9
+    return float((lp[-1] - lp[0]) / sd)
+
+
+def _ema_reversal_pos(close, win=120, smooth=0.99, lookback=2000):
+    """Converged EMA-smoothed REVERSAL position for TRADE-MIX. Recomputed each
+    cycle from price history (deterministic, no cross-cycle state). Heavy
+    smoothing keeps turnover ~0.004 so the validator's 20bp/|delta-pos| fee
+    doesn't erase the edge — backtest: rev+smooth0.99 Sharpe ~+3 vs churn ~-5."""
+    if len(close) < win + 50:
+        return 0.0
+    lp = np.log(np.clip(close[-lookback:], 1e-12, None))
+    pos = 0.0
+    for t in range(win, len(lp)):
+        sd = np.diff(lp[t - win:t + 1]).std() * np.sqrt(win) + 1e-9
+        z = (lp[t] - lp[t - win]) / sd
+        pos = (1.0 - smooth) * (-np.tanh(z)) + smooth * pos
+    return float(np.clip(pos, -1.0, 1.0))
+
+
 def build_embeddings(price: "PriceFeed", funding: "FundingFeed") -> list:
     out = []
     for c in config.CHALLENGES:
@@ -97,15 +121,15 @@ def build_embeddings(price: "PriceFeed", funding: "FundingFeed") -> list:
 
         elif lf == "range_breakout_multi":                     # contrarian breakout -> reversal
             d = {}
+            # contrarian (reversal): strong move+order-flow -> bet reversal.
+            # backtest: mom+ofi sign=- win=30 -> OOS AUC ~0.538 (clears >0.5 gate).
+            # only a[0] is scored by the validator; a[1] kept valid but unused.
             for a in c["assets"]:
                 cl = price.close.get(a, np.array([]))
-                if len(cl) > 61:
-                    lp = np.log(np.clip(cl[-61:], 1e-12, None))
-                    sd = np.diff(lp).std() * np.sqrt(60) + 1e-9
-                    slope = (lp[-1] - lp[0]) / sd
-                    p_cont = float(np.clip(_sig(-0.6 * slope), 0.01, 0.99))
-                else:
-                    p_cont = 0.5
+                mom = _mom_z(cl, 30)
+                ofi = _ofi_recent(price.ofi.get(a, np.array([])), 30)
+                s = 0.7 * np.tanh(mom) + 0.3 * ofi
+                p_cont = float(np.clip(_sig(-s), 0.01, 0.99)) if len(cl) > 32 else 0.5
                 d[a] = [p_cont, round(1.0 - p_cont, 6)]
             out.append(d)
 
@@ -123,17 +147,11 @@ def build_embeddings(price: "PriceFeed", funding: "FundingFeed") -> list:
             sd = vals.std() + 1e-12
             out.append({a: float(np.clip((v - med) / sd, -1, 1)) for a, v in raw.items()})
 
-        elif lf == "trade_mix":                                # contrarian short reversal position
+        elif lf == "trade_mix":                                # persistent low-turnover reversal
             d = {}
             for a in c["assets"]:
                 cl = price.close.get(a, np.array([]))
-                if len(cl) > 61:
-                    lp = np.log(np.clip(cl[-61:], 1e-12, None))
-                    sd = np.diff(lp).std() * np.sqrt(60) + 1e-9
-                    z = (lp[-1] - lp[0]) / sd
-                    d[a] = float(np.clip(-np.tanh(0.5 * z), -1, 1))
-                else:
-                    d[a] = 0.0
+                d[a] = _ema_reversal_pos(cl, win=120, smooth=0.99)
             out.append(d)
 
         else:                                                  # unknown -> zeros

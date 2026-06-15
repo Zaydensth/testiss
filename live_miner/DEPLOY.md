@@ -8,7 +8,7 @@ no inference server — runs on a $5/mo CPU VPS.
 
 > **Honest expectation** (from our backtests): the bundled signals are weak-but-real
 > (funding mean-reversion + contrarian order-flow). Realistic placement is mid-pack /
-> tail of the ~250 earners (~$2–4/day), not top-20. The point of running is to get the
+> tail of the ~250 earners (~$2–4/day), not top-20. Expect ~zero for the first 10 days (immunity), then your share comes off zero and climbs over the following weeks IF the signal is novel/orthogonal. The point of running is to get the
 > ground-truth on-chain answer that a backtest can't give (it can't see competitors).
 
 ## Why a Linux VPS (not macOS)
@@ -76,7 +76,7 @@ pm2 logs sn123-miner
 
 ## 8. Measure (the real test)
 
-After ~5 days (young-UID warmup clears), check your emission on taostats
+After ~10 days (young-UID immunity clears — admin-confirmed 72,000 blocks from first non-zero submission), check your emission on taostats
 `/subnets/123/metagraph` (sort by emission) or via `btcli wallet overview`. Nonzero &
 rising = your signal earns salience. Flat-zero across all challenges = cut at feature
 selection → the free signals aren't enough; needs proprietary alt-data.
